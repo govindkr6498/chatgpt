@@ -2,9 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_community.document_loaders import WebBaseLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter, CharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.vectorstores import FAISS 
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -17,19 +15,12 @@ import os
 
 # Load environment variables
 load_dotenv()
-
-# Set USER_AGENT to avoid warnings
-os.environ["USER_AGENT"] = "MyStreamlitApp"
-
-# Get API key from .env
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
 if not OPENAI_API_KEY:
     raise ValueError("ERROR: OPENAI_API_KEY is missing from .env file!")
 
 app = FastAPI()
 
-# Enable CORS for all origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -39,65 +30,60 @@ app.add_middleware(
 )
 
 # Hardcoded PDF path
-# PDF_PATH = "C:/Users/lenovo/Downloads/ApexDeveloperGuidea.pdf"
-PDF_PATH = "/home/ubuntu/ApexDeveloperGuidea.pdf"
+PDF_PATH = "C:/Users/lenovo/Downloads/ApexDeveloperGuidea.pdf"
 
-# Function to get vector store from static PDF path
+# Function to get vector store from PDF
 def get_vectorstore_from_static_pdf(pdf_path=PDF_PATH):
     pdf_reader = PdfReader(pdf_path)
-    text = ""
-    for page in pdf_reader.pages:
-        text += page.extract_text()
+    text = "".join([page.extract_text() or "" for page in pdf_reader.pages])
 
-    # Split text into chunks
-    text_splitter = CharacterTextSplitter(
-        separator="\n",
-        chunk_size=1000,
-        chunk_overlap=200,
-        length_function=len
-    )
+    text_splitter = CharacterTextSplitter(separator="\n", chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_text(text)
 
-    # Create a vectorstore from the chunks
     embeddings = OpenAIEmbeddings()
     vector_store = FAISS.from_texts(chunks, embeddings)
-
     return vector_store
 
-# Function to get retriever chain
+# **✅ FIX: Use ChatOpenAI() instead of OpenAIEmbeddings()**
 def get_context_retriever_chain(vector_store):
-    llm = ChatOpenAI()
-
     retriever = vector_store.as_retriever()
+    llm = ChatOpenAI(model="gpt-4-turbo", temperature=0)  # ✅ Use LLM, not Embeddings
 
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder(variable_name="chat_history"),
         ("user", "{input}"),
-        ("user", "Given the above conversation, generate a search query to look up in order to get information relevant to the conversation")
+        ("user", "Given the above conversation, generate a search query to get relevant information.")
     ])
 
     retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
-
     return retriever_chain
 
-# Function to get conversational chain
+# Function to get conversational RAG chain
 def get_conversational_rag_chain(retriever_chain): 
-    llm = ChatOpenAI()
+    llm = ChatOpenAI(model="gpt-4-turbo", temperature=0)  # ✅ Use LLM here too
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "Answer the user's questions based on the below context:\n\n{context}"),
+        ("system", "Answer the user's questions only based on the below context:\n\n{context}\n\n"
+                   "If the context does not contain relevant information, respond with 'I don't know'."),
         MessagesPlaceholder(variable_name="chat_history"),
         ("user", "{input}"),
     ])
 
     stuff_documents_chain = create_stuff_documents_chain(llm, prompt)
-
     return create_retrieval_chain(retriever_chain, stuff_documents_chain)
 
 # Function to get response
-def get_response(user_input):
+# def get_response(user_input):
     retriever_chain = get_context_retriever_chain(st.session_state.vector_store)
     conversation_rag_chain = get_conversational_rag_chain(retriever_chain)
+
+    retrieved_docs = retriever_chain.invoke({
+        "chat_history": st.session_state.chat_history,
+        "input": user_input
+    })
+
+    if not retrieved_docs['documents']:
+        return "I don't know. The PDF does not contain relevant information."
 
     response = conversation_rag_chain.invoke({
         "chat_history": st.session_state.chat_history,
@@ -106,33 +92,42 @@ def get_response(user_input):
 
     return response['answer']
 
-# Streamlit App Configuration
-st.set_page_config(page_title="Chat with PDF", page_icon="")
+def get_response(user_input):
+    retriever_chain = get_context_retriever_chain(st.session_state.vector_store)
+    conversation_rag_chain = get_conversational_rag_chain(retriever_chain)
+
+    retrieved_docs = retriever_chain.invoke({
+        "chat_history": st.session_state.chat_history,
+        "input": user_input
+    })
+
+    if not retrieved_docs:  # ✅ FIX: Check if the list is empty
+        return "I don't know. The PDF does not contain relevant information."
+
+    response = conversation_rag_chain.invoke({
+        "chat_history": st.session_state.chat_history,
+        "input": user_input
+    })
+
+    return response['answer']
+
+# Streamlit App
+st.set_page_config(page_title="Chat with PDF")
 st.title("Chat with PDF")
 
-# Initialize Chat History
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = [
-        AIMessage(content="Hello, I am a bot. How can I help you?")
-    ]
+    st.session_state.chat_history = [AIMessage(content="Hello, I am a bot. How can I help you?")]
 
-# Load the static PDF and create the vector store
 if "vector_store" not in st.session_state:
     with st.spinner("Processing PDF..."):
         st.session_state.vector_store = get_vectorstore_from_static_pdf()
 
-# Chat Input
 user_query = st.chat_input("Type your message here...")
 if user_query:
     response = get_response(user_query)
     st.session_state.chat_history.append(HumanMessage(content=user_query))
     st.session_state.chat_history.append(AIMessage(content=response))
 
-# Display Chat History
 for message in st.session_state.chat_history:
-    if isinstance(message, AIMessage):
-        with st.chat_message("AI"):
-            st.write(message.content)
-    elif isinstance(message, HumanMessage):
-        with st.chat_message("Human"):
-            st.write(message.content)
+    with st.chat_message("AI" if isinstance(message, AIMessage) else "Human"):
+        st.write(message.content)
