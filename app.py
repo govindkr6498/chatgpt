@@ -30,8 +30,8 @@ app.add_middleware(
 )
 
 # Hardcoded PDF path
-PDF_PATH = "C:/Users/lenovo/Downloads/ApexDeveloperGuidea.pdf"
-
+# PDF_PATH = "C:/Users/lenovo/Downloads/ApexDeveloperGuidea.pdf"
+PDF_PATH = "/home/ubuntu/ApexDeveloperGuidea.pdf"
 # Function to get vector store from PDF
 def get_vectorstore_from_static_pdf(pdf_path=PDF_PATH):
     pdf_reader = PdfReader(pdf_path)
@@ -60,7 +60,7 @@ def get_context_retriever_chain(vector_store):
 
 # Function to get conversational RAG chain
 def get_conversational_rag_chain(retriever_chain): 
-    llm = ChatOpenAI(model="gpt-4-turbo", temperature=0)  # ✅ Use LLM here too
+    llm = ChatOpenAI(model="gpt-4-turbo", temperature=0) 
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Answer the user's questions only based on the below context:\n\n{context}\n\n"
@@ -101,7 +101,7 @@ def get_response(user_input):
         "input": user_input
     })
 
-    if not retrieved_docs:  # ✅ FIX: Check if the list is empty
+    if not retrieved_docs:  
         return "I don't know. The PDF does not contain relevant information."
 
     response = conversation_rag_chain.invoke({
